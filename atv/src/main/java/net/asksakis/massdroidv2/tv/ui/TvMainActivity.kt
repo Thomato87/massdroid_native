@@ -42,6 +42,13 @@ class TvMainActivity : ComponentActivity() {
     @Inject lateinit var settingsRepository: SettingsRepository
     @Inject lateinit var volumeKeyController: VolumeKeyController
 
+    /**
+     * The remote's volume keys for a player elsewhere. Android TV does not deliver them to
+     * [dispatchKeyEvent] (the window manager turns them into audio events first), so a media
+     * session with remote volume takes them while the app is in front and a speaker is selected.
+     */
+    private var remoteVolumeSession: TvRemoteVolumeSession? = null
+
     /** This TV's own Sendspin player, so its volume keys are left to the system. */
     @Volatile private var sendspinClientId: String? = null
     private var lastCountedVolumeDownTime = 0L
@@ -53,12 +60,31 @@ class TvMainActivity : ComponentActivity() {
         // start is allowed).
         TvPlaybackService.start(this)
         lifecycleScope.launch { settingsRepository.sendspinClientId.collect { sendspinClientId = it } }
+        remoteVolumeSession = TvRemoteVolumeSession(
+            this, playerRepository, settingsRepository, volumeKeyController, lifecycleScope
+        )
         setContent {
             MassDroidTvTheme {
                 TvRoot(miniPlayerShortcut = miniPlayerShortcut)
                 DevBuildBadge()
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        remoteVolumeSession?.start()
+    }
+
+    override fun onStop() {
+        remoteVolumeSession?.stop()
+        super.onStop()
+    }
+
+    override fun onDestroy() {
+        remoteVolumeSession?.release()
+        remoteVolumeSession = null
+        super.onDestroy()
     }
 
     /**
@@ -98,7 +124,7 @@ class TvMainActivity : ComponentActivity() {
     }
 
     /**
-     * The remote's transport keys (play, pause, play/pause, next, previous, stop) drive the
+     * The remote's transport keys (play, pause, play/pause, next/forward, previous/rewind, stop) drive the
      * selected player, wherever it is, the way the mini player's buttons do. Without this a
      * TV remote's play key reached only the media session of the TV's own stream, so with a
      * speaker selected the key did nothing. Consumed on the way down and up, so nothing else
@@ -109,8 +135,13 @@ class TvMainActivity : ComponentActivity() {
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_HEADSETHOOK -> playerRepository::playPause
             KeyEvent.KEYCODE_MEDIA_PLAY -> playerRepository::play
             KeyEvent.KEYCODE_MEDIA_PAUSE, KeyEvent.KEYCODE_MEDIA_STOP -> { id -> playerRepository.pause(id) }
-            KeyEvent.KEYCODE_MEDIA_NEXT -> playerRepository::next
-            KeyEvent.KEYCODE_MEDIA_PREVIOUS -> playerRepository::previous
+            // TV remotes mostly have no track keys: their |<< and >>| (or << and >>) arrive as
+            // skip, rewind and fast forward. A music queue has nothing to scrub, so all of them
+            // step a track.
+            KeyEvent.KEYCODE_MEDIA_NEXT, KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD,
+            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> playerRepository::next
+            KeyEvent.KEYCODE_MEDIA_PREVIOUS, KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD,
+            KeyEvent.KEYCODE_MEDIA_REWIND -> playerRepository::previous
             else -> return false
         }
         val playerId = playerRepository.selectedPlayer.value?.playerId ?: return false
