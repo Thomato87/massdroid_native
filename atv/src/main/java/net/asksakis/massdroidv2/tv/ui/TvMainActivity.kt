@@ -74,6 +74,7 @@ class TvMainActivity : ComponentActivity() {
     @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val keyCode = event.keyCode
+        if (handleMediaKey(keyCode, event)) return true
         if (keyCode != KeyEvent.KEYCODE_VOLUME_UP && keyCode != KeyEvent.KEYCODE_VOLUME_DOWN) {
             return super.dispatchKeyEvent(event)
         }
@@ -92,6 +93,29 @@ class TvMainActivity : ComponentActivity() {
                 repeat = event.repeatCount > 0
             )
             VolumeKeyAction.FLUSH -> volumeKeyController.flush()
+        }
+        return true
+    }
+
+    /**
+     * The remote's transport keys (play, pause, play/pause, next, previous, stop) drive the
+     * selected player, wherever it is, the way the mini player's buttons do. Without this a
+     * TV remote's play key reached only the media session of the TV's own stream, so with a
+     * speaker selected the key did nothing. Consumed on the way down and up, so nothing else
+     * (the system's own media session routing) acts on the same press; a held key is one press.
+     */
+    private fun handleMediaKey(keyCode: Int, event: KeyEvent): Boolean {
+        val action: suspend (String) -> Unit = when (keyCode) {
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_HEADSETHOOK -> playerRepository::playPause
+            KeyEvent.KEYCODE_MEDIA_PLAY -> playerRepository::play
+            KeyEvent.KEYCODE_MEDIA_PAUSE, KeyEvent.KEYCODE_MEDIA_STOP -> { id -> playerRepository.pause(id) }
+            KeyEvent.KEYCODE_MEDIA_NEXT -> playerRepository::next
+            KeyEvent.KEYCODE_MEDIA_PREVIOUS -> playerRepository::previous
+            else -> return false
+        }
+        val playerId = playerRepository.selectedPlayer.value?.playerId ?: return false
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+            lifecycleScope.launch { runCatching { action(playerId) } }
         }
         return true
     }
